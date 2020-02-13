@@ -1,0 +1,13 @@
+*.o
+*.a
+*.lo
+*.la
+*.so
+*.so.*
+*~
+*.gz
+*.swp
+
+.deps
+.libs
+.dirstamp
