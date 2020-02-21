@@ -30,6 +30,8 @@ union ion_ioctl_arg {
 	struct ion_heap_query query;
 };
 
+struct file *shared_file = NULL;     /**< ion-share use this for sharing */
+
 static int validate_ioctl_arg(unsigned int cmd, union ion_ioctl_arg *arg)
 {
 	int ret = 0;
@@ -71,8 +73,9 @@ long ion_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 
 	dir = ion_ioctl_dir(cmd);
 
-	if (_IOC_SIZE(cmd) > sizeof(data))
+	if (_IOC_SIZE(cmd) > sizeof(data)) {
 		return -EINVAL;
+	}
 
 	/*
 	 * The copy_from_user is unconditional here for both read and write
@@ -104,14 +107,15 @@ long ion_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 			return PTR_ERR(handle);
 
 		data.allocation.handle = handle->id;
-
 		cleanup_handle = handle;
+		pr_debug("ion: alloc %08x %d", (uint32_t)client, data.allocation.handle);
 		break;
 	}
 	case ION_IOC_FREE:
 	{
 		struct ion_handle *handle;
 
+		pr_debug("ion: free  %08x %d", (uint32_t)client, data.handle.handle);
 		mutex_lock(&client->lock);
 		handle = ion_handle_get_by_id_nolock(client, data.handle.handle);
 		if (IS_ERR(handle)) {
@@ -135,6 +139,7 @@ long ion_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 		ion_handle_put(handle);
 		if (data.fd.fd < 0)
 			ret = data.fd.fd;
+		pr_debug(" share client %08x fd %d", (uint32_t)client, data.fd.fd);
 		break;
 	}
 	case ION_IOC_IMPORT:
@@ -142,9 +147,10 @@ long ion_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 		struct ion_handle *handle;
 
 		handle = ion_import_dma_buf_fd(client, data.fd.fd);
-		if (IS_ERR(handle))
+		if (IS_ERR(handle)) {
+			pr_err("import client %08x fd %d failed", (uint32_t)client, data.fd.fd);
 			ret = PTR_ERR(handle);
-		else
+		} else
 			data.handle.handle = handle->id;
 		break;
 	}
@@ -155,6 +161,13 @@ long ion_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 	}
 	case ION_IOC_CUSTOM:
 	{
+		if (data.custom.cmd == O_DIRECT) {	// share it
+			shared_file = filp;
+			pr_notice("ion: set file %08x (client %08x) as shared\n", 
+					(uint32_t)filp, (uint32_t)client);
+			return 0;
+		}
+
 		if (!dev->custom_ioctl)
 			return -ENOTTY;
 		ret = dev->custom_ioctl(client, data.custom.cmd,

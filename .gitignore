@@ -1,4 +1,7 @@
+*.mod.c
 *.o
+*.o.cmd
+*.o.ur-safe
 *.a
 *.lo
 *.la
@@ -7,7 +10,12 @@
 *~
 *.gz
 *.swp
+*.ko
 
 .deps
 .libs
 .dirstamp
+.*
+
+Module.symvers
+modules.order

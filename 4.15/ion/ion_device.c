@@ -22,7 +22,97 @@
 #include "ion.h"
 #include "ion_priv.h"
 
-static struct ion_device *idev;
+static struct ion_device *ion_dev = NULL;
+extern struct file       *shared_file;
+
+/*-------------------------- ion-share device --------------------------------*/
+
+struct ion_share_device {
+	struct miscdevice misc;
+};
+
+static long ion_share_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
+{
+	if (cmd == ION_IOC_CUSTOM) { // ION_IOC_SHARE_FD
+		// already in share mode
+		pr_notice("ion-shared: ignore ioctl %08x\n", (uint32_t)filp);
+		return 0;
+	}
+
+	pr_debug("ion-shared: ioctl %08x\n", cmd);
+
+	if (shared_file && ion_dev) {
+		// share_id = file->private_data;
+		return ion_dev->dev.fops->unlocked_ioctl(shared_file, cmd, arg);
+	}
+	// return ion_dev->dev.fops->unlocked_ioctl(filp, cmd, arg);
+	return -ENOTTY;
+}
+
+static int ion_share_open(struct inode *inode, struct file *file)
+{
+	pr_debug("ion-shared: open %08x\n", (uint32_t)file);
+	// return ion_dev->dev.fops->open(inode, file);
+	// file->private_data = share_id;
+	return 0;
+}
+
+static int ion_share_release(struct inode *inode, struct file *file)
+{
+	pr_debug("ion-shared: close %08x\n", (uint32_t)file);
+	// return ion_dev->dev.fops->release(inode, file);
+	// share_id = file->private_data;
+	return 0;
+}
+
+static const struct file_operations ion_share_fops = {
+	.owner          = THIS_MODULE,
+	.open           = ion_share_open,
+	.release        = ion_share_release,
+	.unlocked_ioctl = ion_share_ioctl,
+#ifdef CONFIG_COMPAT
+	.compat_ioctl   = ion_share_ioctl,
+#endif
+};
+
+static struct ion_share_device *
+_ion_share_device_create(struct platform_device *pdev)
+{
+	int ret;
+	struct ion_share_device *hydev;
+	struct miscdevice 	    *pmisc;
+
+	hydev = devm_kzalloc(&pdev->dev, sizeof(*hydev), GFP_KERNEL);
+	if (!hydev)
+		return -ENOMEM;
+
+	pmisc = &hydev->misc;
+
+	pmisc->minor  = MISC_DYNAMIC_MINOR;
+	pmisc->name   = "ion-share";
+	pmisc->fops   = &ion_share_fops;
+	pmisc->parent = &pdev->dev;
+	if (0 != (ret = misc_register(pmisc))) {
+		pr_err("failed to register misc device.\n");
+	}
+
+	platform_set_drvdata(pdev, hydev);
+	return ret;
+}
+
+static int
+_ion_share_device_remove(struct platform_device *pdev)
+{
+	struct ion_share_device *hydev = platform_get_drvdata(pdev);
+	if (!hydev)
+		return -ENODATA;
+
+	misc_deregister(&hydev->misc);
+	return 0;
+}
+
+/*------------------------- ion device resources -----------------------------*/
+
 static struct ion_heap **heaps;
 static void *carveout_ptr = NULL;
 static void *chunk_ptr = NULL;
@@ -80,15 +170,17 @@ static void _ion_device_clean(void)
 	}
 }
 
-static int my_ion_probe(struct platform_device *pdev)
+/*---------------------- ion-share and ion driver ----------------------------*/
+
+static int hyper_ion_probe(struct platform_device *pdev)
 {
 	int i, err;
 	// struct ion_platform_data *pdata = pdev->dev.platform_data;
 
-	idev = ion_device_create(NULL);
+	ion_dev = ion_device_create(NULL);
 
-	if (IS_ERR(idev)) {
-		return PTR_ERR(idev);
+	if (IS_ERR(ion_dev)) {
+		return PTR_ERR(ion_dev);
 	}
 
 	heaps = kcalloc(ion_pdata.nr, sizeof(struct ion_heap *), GFP_KERNEL);
@@ -110,9 +202,11 @@ static int my_ion_probe(struct platform_device *pdev)
 			err = PTR_ERR(heaps[i]);
 			goto err;
 		}
-		ion_device_add_heap(idev, heaps[i]);
+		ion_device_add_heap(ion_dev, heaps[i]);
 	}
 	
+	(void)_ion_share_device_create(pdev);
+
 	pr_notice("ion: started\n");
 	return 0;
 
@@ -122,40 +216,43 @@ err:
 	return err;
 }
 
-static int my_ion_remove(struct platform_device *pdev)
+static int hyper_ion_remove(struct platform_device *pdev)
 {
 	// struct ion_platform_data *pdata = pdev->dev.platform_data;
 
 	_ion_device_clean();
 
-	ion_device_destroy(idev);
+	ion_device_destroy(ion_dev);
+
+	_ion_share_device_remove(pdev);
 
 	pr_notice("ion: removed\n");
 	return 0;
 }
 
-static struct platform_device *ion_device;
-static struct platform_driver ion_driver = {
-	.probe  = my_ion_probe,
-	.remove = my_ion_remove,
-	.driver = { .name = "ion-mgnt" }
+static struct platform_driver  ion_share_driver = {
+	.probe  = hyper_ion_probe,
+	.remove = hyper_ion_remove,
+	.driver = { .name = "ion-hyper" }
 };
+
+static struct platform_device *ion_share_device;
 
 static int __init ion_module_init(void)
 {
-	ion_device = platform_device_register_simple("ion-mgnt", -1, NULL, 0);
+	ion_share_device = platform_device_register_simple("ion-hyper", -1, NULL, 0);
 
-	if (IS_ERR(ion_device)) {
-		return PTR_ERR(ion_device);
+	if (IS_ERR(ion_share_device)) {
+		return PTR_ERR(ion_share_device);
 	}
 
-	return platform_driver_probe(&ion_driver, my_ion_probe);
+	return platform_driver_probe(&ion_share_driver, hyper_ion_probe);
 }
 
 static void __exit ion_module_exit(void)
 {
-	platform_driver_unregister(&ion_driver);
-	platform_device_unregister(ion_device);
+	platform_driver_unregister(&ion_share_driver);
+	platform_device_unregister(ion_share_device);
 }
 
 module_init(ion_module_init);

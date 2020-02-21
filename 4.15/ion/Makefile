@@ -5,7 +5,7 @@
 #
 #
 
-ccflags-y += -I$(src) -Wno-error=implicit-int -Wno-int-conversion -Wno-error=implicit-function-declaration
+ccflags-y += -I$(src) -Wno-error=implicit-int -Wno-int-conversion -Wno-error=implicit-function-declaration -Wno-pointer-to-int-cast
 obj-m := ion_linux.o
 
 ion_linux-y := ion.o ion-ioctl.o ion_heap.o \
